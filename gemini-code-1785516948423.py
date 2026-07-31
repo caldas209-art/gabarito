@@ -20,7 +20,7 @@ def salvar_historico(dados):
 
 
 # Configuração da página otimizada para visualização mobile
-st.set_page_title(
+st.set_page_config(
     page_title="Corretor Mobile", page_icon="📝", layout="centered"
 )
 
