@@ -9,54 +9,34 @@ import io
 import requests
 
 # ==========================================
-# CONFIGURAÇÃO SEGURA DA API - SEM CHAVES NO CÓDIGO!
+# PEGA A CHAVE DO SECRETS (JÁ CONFIGURADO)
 # ==========================================
 
 def get_api_key():
-    """Obtém a chave da API de forma SEGURA"""
-    # Tenta obter do st.secrets (Streamlit Cloud)
-    if hasattr(st, 'secrets') and 'OCR_API_KEY' in st.secrets:
-        return st.secrets['OCR_API_KEY']
-    
-    # Tenta obter de variável de ambiente (desenvolvimento local)
-    api_key = os.environ.get('OCR_API_KEY')
-    if api_key:
-        return api_key
-    
-    # Tenta obter de arquivo .env (apenas desenvolvimento local)
+    """Pega a chave do Streamlit Secrets"""
     try:
-        from dotenv import load_dotenv
-        load_dotenv()
-        return os.environ.get('OCR_API_KEY')
+        if hasattr(st, 'secrets') and 'OCR_API_KEY' in st.secrets:
+            return st.secrets['OCR_API_KEY']
     except:
         pass
-    
-    # Se não encontrar, retorna None (usará OCR local)
     return None
 
 # ==========================================
-# CONFIGURAÇÃO DA API
+# CONFIGURAÇÕES
 # ==========================================
 API_URL = "https://api.ocr.space/parse/image"
-
-# Arquivo JSON local para salvar o histórico de gabaritos
 DB_FILE = "gabaritos_historico.json"
 
-# Tentar importar bibliotecas locais de OCR com fallback
+# Tenta importar OCR local (fallback)
 try:
     import pytesseract
     import cv2
     import numpy as np
-    OCR_LOCAL_DISPONIVEL = True
-except ImportError:
-    OCR_LOCAL_DISPONIVEL = False
-
-# ==========================================
-# FUNÇÕES PRINCIPAIS
-# ==========================================
+    OCR_LOCAL = True
+except:
+    OCR_LOCAL = False
 
 def carregar_historico():
-    """Carrega o histórico de gabaritos do arquivo JSON"""
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
@@ -66,7 +46,6 @@ def carregar_historico():
     return {}
 
 def salvar_historico(dados):
-    """Salva o histórico de gabaritos no arquivo JSON"""
     try:
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(dados, f, ensure_ascii=False, indent=4)
@@ -74,210 +53,97 @@ def salvar_historico(dados):
     except:
         return False
 
-def processar_imagem_com_api_ocr(imagem):
-    """Processa a imagem usando a API OCR.Space"""
+def processar_com_api(imagem):
     try:
         api_key = get_api_key()
         if not api_key:
             return {}
         
-        # Converter PIL Image para bytes
         img_bytes = io.BytesIO()
         imagem.save(img_bytes, format='PNG')
         img_bytes = img_bytes.getvalue()
         
-        # Preparar para envio
-        files = {
-            'file': ('image.png', img_bytes, 'image/png')
-        }
-        
+        files = {'file': ('image.png', img_bytes, 'image/png')}
         data = {
             'apikey': api_key,
             'language': 'por',
             'isOverlayRequired': False,
-            'detectOrientation': True,
-            'scale': True,
             'OCREngine': 2
         }
         
-        # Fazer requisição para a API
-        with st.spinner('Processando imagem com OCR online...'):
+        with st.spinner('Processando com OCR...'):
             response = requests.post(API_URL, files=files, data=data, timeout=30)
-            
+        
         if response.status_code == 200:
             resultado = response.json()
-            
-            if resultado.get('IsErroredOnProcessing'):
-                st.error(f"Erro na API: {resultado.get('ErrorMessage', 'Erro desconhecido')}")
-                return {}
-            
-            # Extrair texto do resultado
-            texto_completo = ""
+            texto = ""
             for pagina in resultado.get('ParsedResults', []):
-                texto_completo += pagina.get('ParsedText', '') + "\n"
-            
-            if texto_completo.strip():
-                return extrair_respostas_do_texto(texto_completo)
-            else:
-                st.warning("Nenhum texto foi reconhecido na imagem.")
-                return {}
-        else:
-            st.error(f"Erro na API: Status {response.status_code}")
-            return {}
-            
+                texto += pagina.get('ParsedText', '') + "\n"
+            return extrair_respostas(texto)
+        return {}
     except Exception as e:
-        st.error(f"Erro ao processar imagem com API: {str(e)}")
+        st.error(f"Erro: {str(e)}")
         return {}
 
-def processar_imagem_local(imagem):
-    """Processa a imagem usando Tesseract local (fallback)"""
-    if not OCR_LOCAL_DISPONIVEL:
+def processar_local(imagem):
+    if not OCR_LOCAL:
         return {}
-    
     try:
-        # Converter PIL Image para OpenCV
         img_array = np.array(imagem)
-        
-        # Converter para escala de cinza
         if len(img_array.shape) == 3:
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         else:
             gray = img_array
         
-        # Redimensionar para melhorar performance
-        height, width = gray.shape
-        if width > 2000:
-            scale = 2000 / width
-            new_width = 2000
-            new_height = int(height * scale)
-            gray = cv2.resize(gray, (new_width, new_height))
-        
-        # Aplicar threshold para melhorar contraste
         _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-        
-        # Remover ruídos
-        kernel = np.ones((2, 2), np.uint8)
-        thresh = cv2.erode(thresh, kernel, iterations=1)
-        thresh = cv2.dilate(thresh, kernel, iterations=1)
-        
-        # Configuração do Tesseract
         custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDE0123456789'
         texto = pytesseract.image_to_string(thresh, config=custom_config)
-        
-        return extrair_respostas_do_texto(texto)
-        
-    except Exception as e:
-        st.error(f"Erro no OCR local: {str(e)}")
+        return extrair_respostas(texto)
+    except:
         return {}
 
-def processar_imagem_para_respostas(imagem):
-    """Tenta processar com a API primeiro, fallback para local se falhar"""
-    # Primeiro tenta com a API
-    respostas = processar_imagem_com_api_ocr(imagem)
-    
-    # Se falhar, tenta com OCR local
-    if not respostas and OCR_LOCAL_DISPONIVEL:
-        st.info("Tentando OCR local...")
-        respostas = processar_imagem_local(imagem)
-    
-    return respostas
-
-def extrair_respostas_do_texto(texto):
-    """Extrai respostas do texto usando múltiplos padrões"""
+def extrair_respostas(texto):
     respostas = {}
-    
-    # Limpar texto
     texto = texto.upper().strip()
     linhas = texto.split('\n')
     
-    # Padrões de reconhecimento
-    padroes = [
-        re.compile(r'(?:Q|QUESTÃO)\s*(\d+)\s*[.:)]?\s*([A-E])'),
-        re.compile(r'(\d+)\s*[-.:]?\s*([A-E])'),
-        re.compile(r'(\d+)\s*[.:)]\s*([A-E])'),
-        re.compile(r'(\d+)\s*[-–—]\s*([A-E])'),
-        re.compile(r'(\d+)\s*[.)]\s*([A-E])'),
-        re.compile(r'ALT(?:ERNATIVA)?\s*([A-E])', re.IGNORECASE),
-    ]
-    
-    respostas_encontradas = {}
-    numeros_encontrados = set()
+    padrao = re.compile(r'(\d+)\s*[-.:]?\s*([A-E])')
     
     for linha in linhas:
-        linha = linha.strip()
-        if not linha:
-            continue
-            
-        for padrao in padroes:
-            match = padrao.search(linha)
-            if match:
-                try:
-                    if len(match.groups()) == 2:
-                        num = int(match.group(1))
-                        letra = match.group(2).upper()
-                    else:
-                        letra = match.group(1).upper()
-                        num = max([0] + list(numeros_encontrados)) + 1
-                    
-                    if 1 <= num <= 50 and letra in 'ABCDE':
-                        respostas_encontradas[str(num)] = letra
-                        numeros_encontrados.add(num)
-                        break
-                except:
-                    continue
+        match = padrao.search(linha)
+        if match:
+            num = int(match.group(1))
+            letra = match.group(2).upper()
+            if 1 <= num <= 50:
+                respostas[str(num)] = letra
     
-    if respostas_encontradas:
-        return respostas_encontradas
-    
-    # Tentar identificar sequência de letras
-    letras_sequencia = []
-    for linha in linhas:
-        linha = linha.strip()
-        if len(linha) == 1 and linha in 'ABCDE':
-            letras_sequencia.append(linha)
-        elif len(linha) > 1:
+    if not respostas:
+        letras = []
+        for linha in linhas:
             for char in linha:
                 if char in 'ABCDE':
-                    letras_sequencia.append(char)
-    
-    if letras_sequencia:
-        for i, letra in enumerate(letras_sequencia[:50], 1):
+                    letras.append(char)
+        for i, letra in enumerate(letras[:50], 1):
             respostas[str(i)] = letra
-        return respostas
     
-    letras_isoladas = re.findall(r'\b([A-E])\b', texto)
-    if letras_isoladas:
-        for i, letra in enumerate(letras_isoladas[:50], 1):
-            respostas[str(i)] = letra
-        return respostas
-    
-    return {}
+    return respostas
 
-def calcular_correcao(respostas_aluno, gabarito_oficial, nome_prova=""):
-    """Calcula e exibe os resultados da correção"""
+def corrigir(respostas_aluno, gabarito, nome_prova=""):
     acertos = 0
-    total_questoes = len(gabarito_oficial)
+    total = len(gabarito)
     detalhes = []
-    questoes_nao_respondidas = 0
+    nao_respondidas = 0
     
-    # Filtrar respostas não marcadas
-    respostas_validas = {}
-    for q, resp in respostas_aluno.items():
-        if resp and resp != "-" and resp != "":
-            respostas_validas[q] = resp
-    
-    # Verificar cada questão
-    for q, gab_correto in gabarito_oficial.items():
-        resp_al = respostas_validas.get(q, "-")
-        
+    for q, gab_correto in gabarito.items():
+        resp_al = respostas_aluno.get(q, "-")
         if resp_al == "-":
-            status = "Nao respondida"
-            questoes_nao_respondidas += 1
+            status = "❌ Não respondida"
+            nao_respondidas += 1
         elif resp_al == gab_correto:
             acertos += 1
-            status = "Correto"
+            status = "✅ Correta"
         else:
-            status = f"Errado (Era {gab_correto})"
+            status = f"❌ Errada (era {gab_correto})"
         
         detalhes.append({
             "Questão": f"Q{q}",
@@ -286,313 +152,214 @@ def calcular_correcao(respostas_aluno, gabarito_oficial, nome_prova=""):
             "Status": status,
         })
     
-    nota_final = (acertos / total_questoes) * 100
+    nota = (acertos / total) * 100
     
-    # Exibir resultados
     st.markdown("---")
-    st.subheader("Resultado da Correção")
+    st.subheader("📊 Resultado da Correção")
     
-    # Cards com métricas
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Nota", f"{nota_final:.1f}%")
+        st.metric("🎯 Nota", f"{nota:.1f}%")
     with col2:
-        st.metric("Acertos", acertos)
+        st.metric("✅ Acertos", acertos)
     with col3:
-        st.metric("Erros", total_questoes - acertos - questoes_nao_respondidas)
-    with col4:
-        st.metric("Em branco", questoes_nao_respondidas)
+        st.metric("❌ Erros", total - acertos - nao_respondidas)
     
-    # Tabela detalhada
-    df_detalhes = pd.DataFrame(detalhes)
-    st.dataframe(df_detalhes, use_container_width=True, hide_index=True)
+    df = pd.DataFrame(detalhes)
+    st.dataframe(df, use_container_width=True, hide_index=True)
     
-    # Salvar resultado automaticamente
+    # Salvar histórico
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    resultado = {
+    if 'historico' not in st.session_state:
+        st.session_state.historico = []
+    st.session_state.historico.append({
         "data": timestamp,
         "prova": nome_prova,
-        "nota": nota_final,
+        "nota": nota,
         "acertos": acertos,
-        "total": total_questoes,
-        "nao_respondidas": questoes_nao_respondidas,
+        "total": total,
+        "nao_respondidas": nao_respondidas,
         "detalhes": detalhes
-    }
+    })
     
-    if 'historico_correcoes' not in st.session_state:
-        st.session_state.historico_correcoes = []
-    st.session_state.historico_correcoes.append(resultado)
-    
-    # Botão para exportar resultado
-    if st.button("Exportar CSV"):
+    # Exportar CSV
+    if st.button("📥 Exportar CSV"):
         df_export = pd.DataFrame(detalhes)
         csv = df_export.to_csv(index=False)
         st.download_button(
-            label="Baixar CSV",
-            data=csv,
-            file_name=f"correcao_{timestamp}.csv",
-            mime="text/csv"
+            "Baixar CSV",
+            csv,
+            f"correcao_{timestamp}.csv",
+            "text/csv"
         )
-    
-    return resultado
 
 # ==========================================
-# INTERFACE STREAMLIT
+# INTERFACE
 # ==========================================
 
 st.set_page_config(
-    page_title="Corretor de Provas", 
-    page_icon="📝", 
-    layout="centered",
-    initial_sidebar_state="collapsed"
+    page_title="Corretor de Provas",
+    page_icon="📝",
+    layout="centered"
 )
 
-# Estilização CSS
-st.markdown("""
-<style>
-.main { background-color: #f8f9fa; }
-.stButton>button { width: 100%; border-radius: 8px; height: 3em; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("📝 Corretor de Provas")
-st.caption("Versao 2.1 - Com OCR via API e reconhecimento automatico")
 
-# Verificar se a chave API está configurada
+# Verifica se a chave está funcionando
 api_key = get_api_key()
-if not api_key:
-    st.info("Chave de API nao configurada. Usando OCR local (Tesseract) como fallback.")
+if api_key:
+    st.success("✅ API OCR configurada com sucesso!")
 else:
-    st.success("Chave de API configurada com sucesso!")
+    st.info("📌 Usando OCR local (Tesseract)")
 
-# Carrega os dados salvos
-historico_gabaritos = carregar_historico()
+dados = carregar_historico()
 
-# Menu de navegação
-aba1, aba2, aba3 = st.tabs(["📌 Gabaritos", "📷 Corrigir", "📊 Historico"])
+aba1, aba2, aba3 = st.tabs(["📌 Gabaritos", "📷 Corrigir", "📊 Histórico"])
 
 # ==========================================
-# ABA 1: GABARITOS
+# ABA 1 - GABARITOS
 # ==========================================
 with aba1:
-    st.subheader("📌 Gerenciar Gabaritos")
+    st.subheader("Criar Novo Gabarito")
     
-    opcao_gabarito = st.radio(
-        "Como deseja criar o gabarito?",
-        ["✏️ Digitar manualmente", "📋 Colar texto", "📂 Importar CSV"],
-        horizontal=True
-    )
-    
-    if opcao_gabarito == "✏️ Digitar manualmente":
-        with st.form("form_novo_gabarito"):
-            nome_prova = st.text_input("Nome da Avaliacao", placeholder="Ex: Prova 1 - Biologia")
-            num_questoes = st.number_input("Quantidade de Questoes", min_value=1, max_value=50, value=13)
-
-            st.markdown("---")
-            st.write("Selecione a alternativa correta para cada questao:")
-
-            respostas_cadastradas = {}
-            alternativas = ["A", "B", "C", "D", "E"]
-
-            cols = st.columns(4)
-            for i in range(1, int(num_questoes) + 1):
-                col_atual = cols[(i - 1) % 4]
-                with col_atual:
-                    respostas_cadastradas[str(i)] = st.selectbox(f"Q{i}", alternativas, key=f"cad_q_{i}")
-
-            btn_salvar = st.form_submit_button("💾 Salvar Gabarito")
-
-            if btn_salvar:
-                if not nome_prova.strip():
-                    st.error("Por favor, informe o nome da avaliacao.")
-                elif nome_prova in historico_gabaritos:
-                    st.warning(f"Já existe um gabarito com o nome '{nome_prova}'. Deseja sobrescrever?")
-                    if st.button("Sobrescrever"):
-                        historico_gabaritos[nome_prova] = respostas_cadastradas
-                        if salvar_historico(historico_gabaritos):
-                            st.success(f"Gabarito '{nome_prova}' atualizado com sucesso!")
-                else:
-                    historico_gabaritos[nome_prova] = respostas_cadastradas
-                    if salvar_historico(historico_gabaritos):
-                        st.success(f"Gabarito '{nome_prova}' salvo com sucesso!")
-    
-    elif opcao_gabarito == "📋 Colar texto":
-        st.info("Cole o gabarito no formato: Numero seguido de letra (ex: 1A, 2B, 3C...)")
-        texto_gabarito = st.text_area("Cole aqui o gabarito", placeholder="1A\n2B\n3C\n4D\n5E", height=150)
+    with st.form("form_gabarito"):
+        nome = st.text_input("Nome da Prova", placeholder="Ex: Biologia - Prova 1")
+        num = st.number_input("Quantidade de Questões", min_value=1, max_value=50, value=13)
         
-        if texto_gabarito:
-            nome_prova = st.text_input("Nome da Avaliacao", placeholder="Ex: Prova 1 - Biologia")
-            if st.button("📥 Importar Gabarito"):
-                if not nome_prova.strip():
-                    st.error("Por favor, informe o nome da avaliacao.")
-                else:
-                    respostas_importadas = extrair_respostas_do_texto(texto_gabarito)
-                    if respostas_importadas:
-                        historico_gabaritos[nome_prova] = respostas_importadas
-                        if salvar_historico(historico_gabaritos):
-                            st.success(f"Gabarito '{nome_prova}' importado com {len(respostas_importadas)} questoes!")
-                    else:
-                        st.error("Nao foi possivel identificar as respostas.")
-    
-    elif opcao_gabarito == "📂 Importar CSV":
-        st.info("Importe um arquivo CSV com as colunas: Questao,Resposta")
-        arquivo_csv = st.file_uploader("Selecione o arquivo CSV", type=['csv'])
+        st.write("Selecione as respostas corretas:")
+        respostas = {}
+        cols = st.columns(4)
+        for i in range(1, int(num) + 1):
+            with cols[(i-1) % 4]:
+                respostas[str(i)] = st.selectbox(
+                    f"Q{i}",
+                    ["A", "B", "C", "D", "E"],
+                    key=f"q_{i}"
+                )
         
-        if arquivo_csv:
-            try:
-                df = pd.read_csv(arquivo_csv)
-                if 'Questão' in df.columns and 'Resposta' in df.columns:
-                    respostas_importadas = {}
-                    for _, row in df.iterrows():
-                        respostas_importadas[str(row['Questão'])] = row['Resposta'].upper()
-                    
-                    nome_prova = st.text_input("Nome da Avaliacao", placeholder="Ex: Prova 1 - Biologia")
-                    if st.button("📥 Importar CSV"):
-                        if not nome_prova.strip():
-                            st.error("Por favor, informe o nome da avaliacao.")
-                        else:
-                            historico_gabaritos[nome_prova] = respostas_importadas
-                            if salvar_historico(historico_gabaritos):
-                                st.success(f"Gabarito '{nome_prova}' importado com {len(respostas_importadas)} questoes!")
-                else:
-                    st.error("O CSV deve ter as colunas: 'Questão' e 'Resposta'")
-            except Exception as e:
-                st.error(f"Erro ao ler o arquivo: {str(e)}")
-
+        if st.form_submit_button("💾 Salvar Gabarito"):
+            if nome:
+                dados[nome] = respostas
+                salvar_historico(dados)
+                st.success(f"✅ Gabarito '{nome}' salvo com sucesso!")
+                st.rerun()
+            else:
+                st.error("Digite um nome para a prova")
+    
     st.markdown("---")
     st.subheader("📂 Gabaritos Salvos")
     
-    if historico_gabaritos:
-        gabaritos_ordenados = sorted(historico_gabaritos.items())
-        for nome, gabarito in gabaritos_ordenados:
-            with st.expander(f"📄 {nome} ({len(gabarito)} questoes)"):
-                df_gab = pd.DataFrame(list(gabarito.items()), columns=["Questao", "Resposta Correta"])
-                st.dataframe(df_gab, use_container_width=True, hide_index=True)
+    if dados:
+        for nome, gab in sorted(dados.items()):
+            with st.expander(f"📄 {nome} ({len(gab)} questões)"):
+                df = pd.DataFrame(list(gab.items()), columns=["Questão", "Resposta"])
+                st.dataframe(df, use_container_width=True, hide_index=True)
                 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button(f"📋 Copiar", key=f"copy_{nome}"):
-                        texto = "\n".join([f"{k}{v}" for k, v in gabarito.items()])
-                        st.code(texto, language="text")
-                with col2:
-                    if st.button(f"🗑️ Excluir", key=f"del_{nome}"):
-                        del historico_gabaritos[nome]
-                        if salvar_historico(historico_gabaritos):
-                            st.success(f"Gabarito '{nome}' excluido!")
-                            st.rerun()
+                if st.button(f"🗑️ Excluir {nome}", key=f"del_{nome}"):
+                    del dados[nome]
+                    salvar_historico(dados)
+                    st.rerun()
     else:
-        st.info("Nenhum gabarito cadastrado.")
+        st.info("Nenhum gabarito cadastrado ainda")
 
 # ==========================================
-# ABA 2: CORREÇÃO
+# ABA 2 - CORRIGIR
 # ==========================================
 with aba2:
-    st.subheader("📷 Corrigir Prova")
-    
-    if not historico_gabaritos:
-        st.warning("Cadastre um gabarito na aba 'Gabaritos' antes de corrigir uma prova.")
+    if not dados:
+        st.warning("⚠️ Crie um gabarito na aba 'Gabaritos' primeiro")
     else:
-        prova_escolhida = st.selectbox("📚 Selecione o Gabarito", list(historico_gabaritos.keys()))
-        gabarito_oficial = historico_gabaritos[prova_escolhida]
-
-        metodo_entrada = st.radio(
+        prova = st.selectbox("Selecione o Gabarito", list(dados.keys()))
+        gabarito = dados[prova]
+        
+        metodo = st.radio(
             "Como deseja inserir as respostas?",
-            ["📷 Foto (OCR)", "⌨️ Digitar manualmente", "📋 Colar texto"],
+            ["📷 Foto", "⌨️ Digitar", "📋 Colar"],
             horizontal=True
         )
         
-        if metodo_entrada == "📷 Foto (OCR)":
-            if not api_key:
-                st.info("Usando OCR local (Tesseract) pois a chave API nao esta configurada.")
+        if metodo == "📷 Foto":
+            st.write("Tire uma foto da folha de respostas:")
+            foto = st.camera_input("📸 Capturar")
             
-            st.write("**Tire uma foto da folha de respostas:**")
-            foto_aluno = st.camera_input("📸 Capturar Folha")
-            
-            if foto_aluno is not None:
-                st.success("Foto capturada!")
-                st.image(foto_aluno, caption="Foto enviada", use_container_width=True)
+            if foto:
+                imagem = Image.open(foto)
+                st.image(imagem, caption="Foto enviada", use_container_width=True)
                 
-                with st.spinner("Processando imagem..."):
-                    imagem = Image.open(foto_aluno)
-                    respostas_extraidas = processar_imagem_para_respostas(imagem)
+                with st.spinner("🔍 Reconhecendo respostas..."):
+                    respostas = processar_com_api(imagem)
+                    if not respostas and OCR_LOCAL:
+                        respostas = processar_local(imagem)
                 
-                if not respostas_extraidas:
-                    st.warning("Nao foi possivel identificar respostas automaticamente.")
-                    if st.button("✏️ Inserir manualmente"):
-                        st.session_state['modo_manual'] = True
-                else:
-                    df_respostas = pd.DataFrame(
-                        list(respostas_extraidas.items()), 
-                        columns=["Questao", "Resposta do Aluno"]
-                    )
-                    st.success(f"Encontradas {len(respostas_extraidas)} respostas!")
-                    st.dataframe(df_respostas, use_container_width=True, hide_index=True)
+                if respostas:
+                    st.success(f"✅ Encontradas {len(respostas)} respostas!")
+                    df = pd.DataFrame(list(respostas.items()), columns=["Questão", "Resposta"])
+                    st.dataframe(df, use_container_width=True, hide_index=True)
                     
                     if st.button("📊 Corrigir Prova", type="primary"):
-                        calcular_correcao(respostas_extraidas, gabarito_oficial, prova_escolhida)
+                        corrigir(respostas, gabarito, prova)
+                else:
+                    st.warning("⚠️ Não foi possível reconhecer as respostas")
+                    st.info("💡 Tente: tirar uma foto mais nítida ou digitar manualmente")
         
-        elif metodo_entrada == "⌨️ Digitar manualmente":
-            respostas_aluno = {}
-            st.write("**Insira as respostas do aluno:**")
-            
-            cols_manual = st.columns(4)
-            for i, resp_correta in gabarito_oficial.items():
-                col_idx = (int(i) - 1) % 4
-                with cols_manual[col_idx]:
-                    respostas_aluno[i] = st.selectbox(
-                        f"Q{i}", ["-", "A", "B", "C", "D", "E"],
-                        key=f"manual_q_{i}",
-                        help=f"Gabarito: {resp_correta}"
+        elif metodo == "⌨️ Digitar":
+            st.write("Digite as respostas do aluno:")
+            respostas = {}
+            cols = st.columns(4)
+            for i, resp in gabarito.items():
+                with cols[(int(i)-1) % 4]:
+                    respostas[i] = st.selectbox(
+                        f"Q{i}",
+                        ["-", "A", "B", "C", "D", "E"],
+                        key=f"r_{i}"
                     )
             
             if st.button("📊 Corrigir Prova", type="primary"):
-                calcular_correcao(respostas_aluno, gabarito_oficial, prova_escolhida)
+                corrigir(respostas, gabarito, prova)
         
-        elif metodo_entrada == "📋 Colar texto":
-            st.write("**Cole as respostas do aluno:**")
-            texto_aluno = st.text_area("Respostas", placeholder="1A\n2B\n3C\n4D\n5E", height=100)
+        else:  # Colar
+            st.write("Cole as respostas (ex: 1A, 2B, 3C...):")
+            texto = st.text_area(
+                "Respostas",
+                placeholder="1A\n2B\n3C\n4D\n5E",
+                height=100
+            )
             
-            if texto_aluno:
-                respostas_aluno = extrair_respostas_do_texto(texto_aluno)
-                if respostas_aluno:
-                    st.success(f"Identificadas {len(respostas_aluno)} respostas!")
-                    df_resp = pd.DataFrame(list(respostas_aluno.items()), columns=["Questao", "Resposta"])
-                    st.dataframe(df_resp, use_container_width=True, hide_index=True)
+            if texto:
+                respostas = extrair_respostas(texto)
+                if respostas:
+                    st.success(f"✅ Identificadas {len(respostas)} respostas!")
+                    df = pd.DataFrame(list(respostas.items()), columns=["Questão", "Resposta"])
+                    st.dataframe(df, use_container_width=True, hide_index=True)
                     
                     if st.button("📊 Corrigir Prova", type="primary"):
-                        calcular_correcao(respostas_aluno, gabarito_oficial, prova_escolhida)
+                        corrigir(respostas, gabarito, prova)
                 else:
-                    st.warning("Nao foi possivel identificar as respostas.")
+                    st.warning("⚠️ Não foi possível identificar as respostas")
 
 # ==========================================
-# ABA 3: HISTÓRICO
+# ABA 3 - HISTÓRICO
 # ==========================================
 with aba3:
-    st.subheader("📊 Historico de Correcoes")
+    st.subheader("📊 Histórico de Correções")
     
-    if 'historico_correcoes' in st.session_state and st.session_state.historico_correcoes:
-        st.info(f"Total de correcoes: {len(st.session_state.historico_correcoes)}")
+    if 'historico' in st.session_state and st.session_state.historico:
+        st.info(f"Total de correções: {len(st.session_state.historico)}")
         
-        if st.button("🗑️ Limpar Historico"):
-            st.session_state.historico_correcoes = []
-            st.success("Historico limpo!")
-            st.rerun()
-        
-        for correcao in reversed(st.session_state.historico_correcoes):
-            with st.expander(f"📝 {correcao.get('prova', 'Prova')} - {correcao.get('data', 'Data')}"):
+        for item in reversed(st.session_state.historico):
+            with st.expander(f"📝 {item['prova']} - {item['data']}"):
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Nota", f"{correcao.get('nota', 0):.1f}%")
+                    st.metric("Nota", f"{item['nota']:.1f}%")
                 with col2:
-                    st.metric("Acertos", f"{correcao.get('acertos', 0)}/{correcao.get('total', 0)}")
+                    st.metric("Acertos", f"{item['acertos']}/{item['total']}")
                 with col3:
-                    st.metric("Em branco", correcao.get('nao_respondidas', 0))
+                    st.metric("Não respondidas", item['nao_respondidas'])
                 
-                if 'detalhes' in correcao:
-                    df_detalhes = pd.DataFrame(correcao['detalhes'])
-                    st.dataframe(df_detalhes, use_container_width=True, hide_index=True)
+                df = pd.DataFrame(item['detalhes'])
+                st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhuma correcao realizada ainda.")
+        st.info("Nenhuma correção realizada ainda")
 
 st.markdown("---")
-st.caption("📝 Corretor de Provas v2.1 | Desenvolvido com ❤️ usando Streamlit")
+st.caption("📝 Corretor de Provas v2.0")
