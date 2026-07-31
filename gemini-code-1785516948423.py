@@ -134,8 +134,13 @@ def corrigir(respostas_aluno, gabarito, nome_prova=""):
     detalhes = []
     nao_respondidas = 0
     
-    for q, gab_correto in gabarito.items():
+    # Ordenar questões para exibição correta
+    questoes_ordenadas = sorted(gabarito.keys(), key=lambda x: int(x))
+    
+    for q in questoes_ordenadas:
+        gab_correto = gabarito[q]
         resp_al = respostas_aluno.get(q, "-")
+        
         if resp_al == "-":
             status = "❌ Não respondida"
             nao_respondidas += 1
@@ -194,6 +199,40 @@ def corrigir(respostas_aluno, gabarito, nome_prova=""):
         )
 
 # ==========================================
+# FUNÇÃO PARA CRIAR COLUNAS EM ORDEM
+# ==========================================
+def criar_colunas_questoes(questoes, gabarito=None, modo="criar"):
+    """Cria as questões em ordem correta"""
+    resultados = {}
+    
+    # Calcular quantas colunas usar (2 no celular, 4 no desktop)
+    num_colunas = 2  # Padrão para mobile
+    
+    # Ordenar questões
+    questoes_ordenadas = sorted(questoes, key=lambda x: int(x))
+    
+    # Criar colunas
+    cols = st.columns(num_colunas)
+    
+    for idx, q in enumerate(questoes_ordenadas):
+        col_idx = idx % num_colunas
+        with cols[col_idx]:
+            if modo == "criar":
+                resultados[q] = st.selectbox(
+                    f"Q{q}",
+                    ["A", "B", "C", "D", "E"],
+                    key=f"criar_q_{q}"
+                )
+            else:  # modo correção
+                resultados[q] = st.selectbox(
+                    f"Q{q}",
+                    ["-", "A", "B", "C", "D", "E"],
+                    key=f"corrigir_q_{q}"
+                )
+    
+    return resultados
+
+# ==========================================
 # INTERFACE
 # ==========================================
 
@@ -202,6 +241,29 @@ st.set_page_config(
     page_icon="📝",
     layout="centered"
 )
+
+# CSS para melhor visualização mobile
+st.markdown("""
+    <style>
+    /* Ajustes para mobile */
+    @media (max-width: 768px) {
+        .stSelectbox > div {
+            margin-bottom: 10px;
+        }
+        .stButton > button {
+            height: 50px;
+            font-size: 16px;
+        }
+        .stMetric {
+            text-align: center;
+        }
+    }
+    /* Melhorar visualização das colunas */
+    .row-widget.stColumns {
+        gap: 10px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 st.title("📝 Corretor de Provas")
 
@@ -217,7 +279,7 @@ dados = carregar_historico()
 aba1, aba2, aba3 = st.tabs(["📌 Gabaritos", "📷 Corrigir", "📊 Histórico"])
 
 # ==========================================
-# ABA 1 - GABARITOS
+# ABA 1 - GABARITOS (CORRIGIDO)
 # ==========================================
 with aba1:
     st.subheader("Criar Novo Gabarito")
@@ -227,15 +289,10 @@ with aba1:
         num = st.number_input("Quantidade de Questões", min_value=1, max_value=50, value=13)
         
         st.write("Selecione as respostas corretas:")
-        respostas = {}
-        cols = st.columns(4)
-        for i in range(1, int(num) + 1):
-            with cols[(i-1) % 4]:
-                respostas[str(i)] = st.selectbox(
-                    f"Q{i}",
-                    ["A", "B", "C", "D", "E"],
-                    key=f"q_{i}"
-                )
+        
+        # Criar questões em ordem
+        questoes = [str(i) for i in range(1, int(num) + 1)]
+        respostas = criar_colunas_questoes(questoes, modo="criar")
         
         if st.form_submit_button("💾 Salvar Gabarito"):
             if nome:
@@ -252,7 +309,9 @@ with aba1:
     if dados:
         for nome, gab in sorted(dados.items()):
             with st.expander(f"📄 {nome} ({len(gab)} questões)"):
-                df = pd.DataFrame(list(gab.items()), columns=["Questão", "Resposta"])
+                # Ordenar para exibição
+                gab_ordenado = dict(sorted(gab.items(), key=lambda x: int(x[0])))
+                df = pd.DataFrame(list(gab_ordenado.items()), columns=["Questão", "Resposta"])
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 
                 if st.button(f"🗑️ Excluir {nome}", key=f"del_{nome}"):
@@ -263,7 +322,7 @@ with aba1:
         st.info("Nenhum gabarito cadastrado ainda")
 
 # ==========================================
-# ABA 2 - CORRIGIR
+# ABA 2 - CORRIGIR (CORRIGIDO)
 # ==========================================
 with aba2:
     if not dados:
@@ -293,7 +352,9 @@ with aba2:
                 
                 if respostas:
                     st.success(f"✅ Encontradas {len(respostas)} respostas!")
-                    df = pd.DataFrame(list(respostas.items()), columns=["Questão", "Resposta"])
+                    # Ordenar para exibição
+                    respostas_ordenadas = dict(sorted(respostas.items(), key=lambda x: int(x[0])))
+                    df = pd.DataFrame(list(respostas_ordenadas.items()), columns=["Questão", "Resposta"])
                     st.dataframe(df, use_container_width=True, hide_index=True)
                     
                     if st.button("📊 Corrigir Prova", type="primary"):
@@ -304,15 +365,10 @@ with aba2:
         
         elif metodo == "⌨️ Digitar":
             st.write("Digite as respostas do aluno:")
-            respostas = {}
-            cols = st.columns(4)
-            for i, resp in gabarito.items():
-                with cols[(int(i)-1) % 4]:
-                    respostas[i] = st.selectbox(
-                        f"Q{i}",
-                        ["-", "A", "B", "C", "D", "E"],
-                        key=f"r_{i}"
-                    )
+            
+            # Criar questões em ordem para correção
+            questoes = sorted(gabarito.keys(), key=lambda x: int(x))
+            respostas = criar_colunas_questoes(questoes, modo="corrigir")
             
             if st.button("📊 Corrigir Prova", type="primary"):
                 corrigir(respostas, gabarito, prova)
@@ -329,7 +385,9 @@ with aba2:
                 respostas = extrair_respostas(texto)
                 if respostas:
                     st.success(f"✅ Identificadas {len(respostas)} respostas!")
-                    df = pd.DataFrame(list(respostas.items()), columns=["Questão", "Resposta"])
+                    # Ordenar para exibição
+                    respostas_ordenadas = dict(sorted(respostas.items(), key=lambda x: int(x[0])))
+                    df = pd.DataFrame(list(respostas_ordenadas.items()), columns=["Questão", "Resposta"])
                     st.dataframe(df, use_container_width=True, hide_index=True)
                     
                     if st.button("📊 Corrigir Prova", type="primary"):
@@ -362,4 +420,4 @@ with aba3:
         st.info("Nenhuma correção realizada ainda")
 
 st.markdown("---")
-st.caption("📝 Corretor de Provas v2.0")
+st.caption("📝 Corretor de Provas v2.0 - Otimizado para celular")
